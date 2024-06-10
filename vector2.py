@@ -1,9 +1,23 @@
+import json
+import re
 import requests
 from xml.etree import ElementTree as ET
 from openai import OpenAI
 import tempfile
 from dotenv import load_dotenv
 load_dotenv()
+
+def extract_json_substring(text):
+    # Define the regex pattern to match content between ```json and ```, excluding the markers
+    pattern = r'```json\s*(.*?)\s*```'
+    match = re.search(pattern, text, re.DOTALL)
+    
+    if match:
+        # Extract and return the substring
+        return match.group(1).strip()
+    else:
+        # Return None if no match is found
+        return None
 
 def get_about_page(listoflinks):
     client = OpenAI()
@@ -56,6 +70,7 @@ def get_single_nested_links(sitemap_url):
 
     return single_nested_links
 
+
 def save_html_to_tempfile(url):
     try:
         response = requests.get(url)
@@ -85,7 +100,7 @@ def update_vs2(aboutpage):
 
     
 # Example usage
-sitemap_url = "tcs.com"
+sitemap_url = "www.loops.so"
 single_nested_links = get_single_nested_links(sitemap_url)
 print(single_nested_links)
 
@@ -94,7 +109,3 @@ print(aboutpagelink)
 
 
 update_vs2(aboutpagelink)
-
-
-    
-

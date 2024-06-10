@@ -1,104 +1,338 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-import time
+import json
+import re
+from bs4 import BeautifulSoup
 import requests
-import os
 import tempfile
 from openai import OpenAI
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
-driver = webdriver.Chrome()
+ASSISTANT_ID=os.environ["ASSISTANT_ID"]
+VECTOR_STORE_ID=os.environ["VECTOR_STORE_ID"]
 
-# Open the base URL
-driver.get("https://www.intercom.com/customers")  # Replace with the base URL of the website
-#data-testid="cta-link-read-story"
-# Function to get hrefs from the current page
-def get_hrefs_from_page():
-    hrefs = [a.get_attribute('href') for a in driver.find_elements(By.XPATH, '//a[contains(@data-testid, "cta-link-read-story")]')]
-    return hrefs
+def get_case_studies(ogurl : str, case_study_url: str):
+    #Retrieve all links from the sitemap of the comapny website that starts with the case_study_url, i.e, return all the nested pages of the case studies page
+    
+    # Ensure the urls are in proper format
+    ogurl = fix_url(ogurl)
+    case_study_url = fix_url(case_study_url)
 
-# Function to click the "next" button
-def click_next_button():
-    try:
-        next_button = WebDriverWait(driver, 40).until(
-            EC.element_to_be_clickable((By.XPATH, '//button[contains(@class, "pagination__next")]'))  # Adjust the XPath for the "next" button
-        )
-        print(next_button)
-        next_button.click()
-        print("went to next page")
-        return True
-    except:
-        print("no went to next page")
-        return False
 
-# Function to scrape hrefs from all pages
-def scrape_all_pages():
-    all_hrefs = []
-    while True:
-        time.sleep(20)  # Wait for the page to load
-        hrefs = get_hrefs_from_page()
-        all_hrefs.extend(hrefs)
-        if not click_next_button():
-            break  # Break the loop if no more next button is found
-    return all_hrefs
+    # Get the sitemap link    
+    sitemap_url = ogurl + "/sitemap.xml"
 
-# Scrape all pages and print the hrefs
-all_hrefs = scrape_all_pages()
-print(all_hrefs)
-print(len(all_hrefs))
-# Close the browser
-driver.quit()
+    # Get sitemap data or raise error
+    response = requests.get(sitemap_url)
+    if response.status_code != 200:
+        raise Exception(f"Failed to retrieve sitemap: {response.status_code}")
+    sitemap_content = response.content
 
-# Function to save HTML content from a URL to a temporary file and return the file path
+    # Initialise an empty list of links
+    nested_links = []
+    
+    # use a regex pattern that extracts all the links
+    loc_pattern = re.compile(r'<loc>(.*?)</loc>')
+    loc_urls = loc_pattern.findall(str(sitemap_content))
+
+    for loc in loc_urls:
+        loc = fix_url(loc)
+
+        # Check if it is a nested route of the case studies page
+        if loc.startswith(case_study_url) and loc != ogurl:
+            nested_links.append(loc)
+
+    return nested_links
+
+
+def fix_url(url):
+    # Ensure the urls are in proper format
+    
+    url = url.strip("/")
+    if not url.startswith("https://"):
+        url = "https://" + url
+    return url
+
+
+def extract_text_with_line_breaks_from_url(url):
+    # Retrieve all the text contents of the html of a page as a string
+
+    # Ensure it is in the proper format
+    url = fix_url(url)
+
+    # Fetch the HTML content from the URL
+    response = requests.get(url)
+    response.raise_for_status()  # Raise an exception for HTTP errors
+    html_content = response.text
+
+    # Parse the HTML content
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # Extract text with proper line breaks and remove duplicates
+    text_with_line_breaks = '. '.join(list(set(soup.stripped_strings)))
+    
+    return text_with_line_breaks
+
+
 def save_html_to_tempfile(url):
+    #Given a url, saves the html into a Temporary File and returns the file path
+
     try:
+        # Get HTML contents of the page 
         response = requests.get(url)
         response.raise_for_status()
+
+        # Save to Temporary File
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8')
         temp_file.write(response.text)
+
         temp_file.close()
         print(f'Successfully saved {url} to {temp_file.name}')
+
+        # Return Temp File path
         return temp_file.name
+    
     except requests.exceptions.RequestException as e:
         print(f'Failed to retrieve {url}: {e}')
         return None
+    
 
-# List to hold the paths of temporary HTML files
-temp_files = []
-client = OpenAI()
-vector_store_files = client.beta.vector_stores.files.list(
-  vector_store_id="vs_VwMZZPLE2n0cmHr0oqSgFzGL"
-)
-print(vector_store_files)
-for vector_store_file in vector_store_files:
-            deleted = client.beta.vector_stores.files.delete(
-                vector_store_id='vs_VwMZZPLE2n0cmHr0oqSgFzGL',
-                file_id=vector_store_file.id
-            )
-            client.files.delete(vector_store_file.id)
-            print("deleted",deleted.id)
-# Save HTML content from each href to a temporary HTML file\
-for href in all_hrefs:
-    temp_file_path = save_html_to_tempfile(href)
-    if temp_file_path:
-        temp_files.append(temp_file_path)
-print("Temporary HTML files created:")
-print(temp_files)
+    
+def summarize(text):
+    #Given a string of text content from the about page of a company, creates a brief summary of the company
 
-client_files = [client.files.create(file=open(path, "rb"),purpose="assistants") for path in temp_files]
 
-for file in client_files:
-    vector_store_file = client.beta.vector_stores.files.create(
-    vector_store_id="vs_VwMZZPLE2n0cmHr0oqSgFzGL",
-    file_id=file.id
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    my_assistant = client.beta.assistants.create(
+        instructions="You are a company goals summarizer",
+        name="testing",
+        model="gpt-4o",
     )
-    print(vector_store_file)
+    thread = client.beta.threads.create()
+    run = client.beta.threads.runs.create_and_poll(
+        thread_id=thread.id,
+        assistant_id=my_assistant.id,
+        model="gpt-4o",
+        instructions="Provide a brief single paragraph summary on what the following company does given the following sentences in their 'about' page: "+ text
+        )
+    if run.status == "completed":
+        messages = client.beta.threads.messages.list(
+            thread_id=thread.id,
+            run_id=run.id
+        )
+        text = messages.data[0].content[0].text.value
+        text = re.sub(r'【.*?】', '', text) # Remove unwanted stuff from the text
+
+        # Delete the assistant and the thread after use
+        client.beta.assistants.delete(assistant_id=my_assistant.id)
+        client.beta.threads.delete(thread_id=thread.id)
+        return text
+    
+def delete_previous_files_in_vs():
+    # Delete all files present in the vector store
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    vector_store_files = client.beta.vector_stores.files.list(
+    vector_store_id=VECTOR_STORE_ID
+    )
+
+    for vector_store_file in vector_store_files:
+        deleted = client.beta.vector_stores.files.delete(
+            vector_store_id=VECTOR_STORE_ID,
+            file_id=vector_store_file.id
+        )
+        client.files.delete(vector_store_file.id)
+
+def add_files_to_vector_store(files):
+    # Add a list of files to the vector database
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+    # Create client files
+    client_files = []
+    for path in files:    
+        cli =  client.files.create(file=open(path, "rb"),purpose="assistants")
+        client_files.append(cli)
+        
+    # Create vector store files
+    for file in client_files:
+        vector_store_file = client.beta.vector_stores.files.create(
+        vector_store_id=VECTOR_STORE_ID,
+        file_id=file.id
+        )
+    return
+
+def list_of_temp_files(list_of_urls):
+    # Convert a list of urls to list of temporary files and return their paths
+
+    temp_files = []
+    for href in list_of_urls:
+        temp_file_path = save_html_to_tempfile(href)
+        if temp_file_path:
+            temp_files.append(temp_file_path)
+    return temp_files
+
+def store_htmls(list_of_urls):
+
+    # Delete previous files in the vector database
+    delete_previous_files_in_vs()
+
+    
+    # Create a list of temporary file paths from the lit of urls
+    temp_file_paths = list_of_temp_files(list_of_urls)
+
+    # Store the files in the vector database
+    add_files_to_vector_store(temp_file_paths)
+
+    return
+
+    
+
+def get_about_page(listoflinks):
+    # Given a list of singly nested links return the one that is most likely to be of the about page
+    # Can be /about, /who-we-are, /about-us, etc
+    print(1)
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    print(2)
+
+    thread = client.beta.threads.create()
+    print(3)
+
+    my_assistant = client.beta.assistants.create(
+        instructions="You take the about page link from a set of urls",
+        name="testing",
+        model="gpt-4o",
+    )
+    print(4)
+    run = client.beta.threads.runs.create_and_poll(
+        thread_id=thread.id,
+        assistant_id=my_assistant.id,
+        model="gpt-4o",
+        instructions="You will be given a list of endpoints of a particular website. You are to provide back the website link that is most likely to be the about page of the website. Return nothing but the link. The list is as follows: "+str(listoflinks)
+    )  
+    print(5) 
+    print(run)
+    if run.status == "completed":
+        print(6)
+        messages = client.beta.threads.messages.list(
+            thread_id=thread.id,
+            run_id=run.id
+        )
+        link = messages.data[0].content[0].text.value
+        print(messages.data[0].content[0])
+        client.beta.assistants.delete(assistant_id=my_assistant.id)
+        client.beta.threads.delete(thread_id=thread.id)
+        return link
+    print(7)
+    
+ 
+    
+def get_single_nested_links(og_url):
+    # Given the company website, return all the singly nested urls, one of these is to be the about page (an assumption, albeit a good one)
+
+    # Ensure it is in the proper format
+    fixed_url = fix_url(og_url)
+    
+    sitemap_url = fixed_url + "/sitemap.xml"
+
+    # Get sitemap contents
+    response = requests.get(sitemap_url, allow_redirects=True)
+    if response.status_code != 200:
+        raise Exception(f"Failed to retrieve sitemap: {response.status_code}")
+    sitemap_content = response.content
 
 
-#vs_VwMZZPLE2n0cmHr0oqSgFzGL
+    single_nested_links = []
+    
+    # Get all the links that are singly nested, i.e, 'www.intercom.com/customers' and 'www.intercom.com/about' 
+    loc_pattern = re.compile(r'<loc>(.*?)</loc>')
+    loc_urls = loc_pattern.findall(str(sitemap_content))
+    for loc in loc_urls:
+        loc = fix_url(loc)
+        seperated = loc.replace(fixed_url, "")
+        if seperated.count("/")==1:
+            single_nested_links.append(loc)
+
+    return single_nested_links
+
+def get_final_url(url):
+    # Some pages redirect according to location. For example, 'www.accenture.com' redirects to 'www.accenture.com/in-en'. this function returns the url after redirect
+
+    try:
+        url = fix_url(url)
+        response = requests.get(url, allow_redirects=True)
+        final_url = response.url
+        return final_url
+    except requests.RequestException as e:
+        print(f"An error occurred: {e}")
+        return url
+    
+
+def extract_json_substring(text):
+    #Extract the json part from an openAI assistant's output
+
+    pattern = r'```json\s*(.*?)\s*```'
+    match = re.search(pattern, text, re.DOTALL)
+    try:
+        if match:
+            # Extract and return the substring
+            text = match.group(1).strip()
+            text = re.sub(r'【.*?】', '', text)
+            text = text.replace("```json", "").replace("```","")
+            text = json.loads(text)
+            return text
+        else:
+            # Return the same text if no json is found
+            return json.loads(text)
+    except Exception as e:
+        return text
+    
+def get_draft(summary):
+    # Given a summary of the company (extracted from the about page), return the desired output (the comapny url, and the 3 points), using the vector store previously configured
+
+    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    thread = client.beta.threads.create()
+    run = client.beta.threads.runs.create_and_poll(
+        thread_id=thread.id,
+        assistant_id=ASSISTANT_ID,
+        model="gpt-4o",
+        instructions="You have been given HTML documents of case studies for companies done for different companies in the past."
+        "I will provide the summary of a company prospect. Find the most similar case study of a company from the documents that are similar to the summary of the prospect and provide 3 reasons why the case study is worth looking into."
+        "Provide in json format only and nothing extra." 
+        "Example output: {\"case_study\":\"Fundrise\", \"case_study_link\":\"https://www.intercom.com/customers/fundrise\", \"company_link\":\"https://fundrise.com/\", \"similarity\":\"Both fundrise and you company deal in finance and asset management...\"  \"reasons\":[\"We have helped ABC do X more efficiently which also could benefit you because...\", \"We incorporated X into the ABC ecosystem... \", \" We helped ABC do this better, you could use it too.....\"]}"
+        "The summary of the company is as follows: " + summary
+        )
+    if run.status == "completed":
+        messages = client.beta.threads.messages.list(
+            thread_id=thread.id,
+            run_id=run.id
+        )
+        text = messages.data[0].content[0].text.value
+        text = extract_json_substring(text)
+        return text
+
+
+"""
+webpage = "www.intercom.com"
+case_studies_page = "www.intercom.com/customers"
+prospect = 'https://www.loops.so'
+
+final_url = get_final_url(prospect)
+print(final_url)
+print(prospect.strip("/").split("/")[3::])
+allhrefs = get_case_studies(webpage, case_studies_page)
+print(allhrefs)
+store_htmls(allhrefs)
+print(final_url)
+listoflinks = get_single_nested_links(final_url)
+print(listoflinks)
+aboutpage = get_about_page(listoflinks)
+print(aboutpage)
+text = extract_text_with_line_breaks_from_url(aboutpage)
+summary = summarize(text)
+print(summary)
+draft = get_draft(summary)
+"""
 
 
 
