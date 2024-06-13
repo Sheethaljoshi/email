@@ -9,8 +9,13 @@ import os
 
 load_dotenv()
 
-ASSISTANT_ID=os.environ["ASSISTANT_ID"]
-VECTOR_STORE_ID=os.environ["VECTOR_STORE_ID"]
+# Retrieve environment variables and handle missing variables
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ASSISTANT_ID = os.getenv("ASSISTANT_ID")
+VECTOR_STORE_ID = os.getenv("VECTOR_STORE_ID")
+
+if not OPENAI_API_KEY or not ASSISTANT_ID or not VECTOR_STORE_ID:
+    raise EnvironmentError("One or more environment variables are missing.")
 
 def get_case_studies(ogurl : str, case_study_url: str):
     #Retrieve all links from the sitemap of the comapny website that starts with the case_study_url, i.e, return all the nested pages of the case studies page
