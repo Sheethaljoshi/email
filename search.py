@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
+
 ASSISTANT_ID=os.environ["ASSISTANT_ID"]
 VECTOR_STORE_ID=os.environ["VECTOR_STORE_ID"]
 

@@ -29,7 +29,7 @@ def process_urls(company, case_studies, prospect, same_vector_store):
     draft = get_draft(summary)
     return draft
 
-st.title("GritAE Assignment")
+st.title("Email Marketing Tool")
 
 company = st.text_input("Company Website URL", value="www.intercom.com")
 case_studies = st.text_input("Company Case Studies URL", value="www.intercom.com/customers")
